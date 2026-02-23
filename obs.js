@@ -254,6 +254,64 @@ export function createObsClient({ url, password }) {
     }
   }
 
+  async function getCameraScale() {
+    await ensureConnected()
+    const { filters } = await obs.call("GetSourceFilterList", { sourceName: "Camera" })
+    const topLeftSettings = filters.find((f) => f.filterName === "top-left")?.filterSettings
+    return {
+      x: topLeftSettings?.scale?.x ?? 1,
+      y: topLeftSettings?.scale?.y ?? 1
+    }
+  }
+
+  async function setCameraScale(scale = { x: 1, y: 1 }) {
+    const moveFilters = await getMoveFilters("Camera")
+    const currentId = await getCurrentFilterId("Camera", "Camera Source")
+    const currentFilter = findCurrentFilter(moveFilters, currentId)
+
+    const { spacing } = await getCameraSpacing()
+    const { sceneWidth, sceneHeight, sourceWidth, sourceHeight } = await getSceneAndSourceInfo()
+    const { filters } = await obs.call("GetSourceFilterList", { sourceName: "Camera" })
+    const corners = ["top-left", "top-right", "bottom-left", "bottom-right"]
+
+    for (const filterName of corners) {
+      const filterData = filters.find((f) => f.filterName === filterName)
+      if (!filterData) {
+        console.warn(`Filter not found: ${filterName}`)
+        continue
+      }
+
+      const fs = filterData.filterSettings
+      const displayedWidth  = (sourceWidth  - (fs.crop?.left ?? 0) - (fs.crop?.right  ?? 0)) * scale.x
+      const displayedHeight = (sourceHeight - (fs.crop?.top  ?? 0) - (fs.crop?.bottom ?? 0)) * scale.y
+
+      const x =
+        filterName === "top-left" || filterName === "bottom-left"
+          ? spacing.left
+          : sceneWidth - displayedWidth - spacing.right
+
+      const y =
+        filterName === "top-left" || filterName === "top-right"
+          ? spacing.top
+          : sceneHeight - displayedHeight - spacing.bottom
+
+      await obs.call("SetSourceFilterSettings", {
+        sourceName: "Camera",
+        filterName,
+        filterSettings: { ...fs, scale, pos: { x, y } },
+        overlay: false
+      })
+    }
+
+    if (currentFilter) {
+      await obs.call("SetSourceFilterEnabled", {
+        sourceName: "Camera",
+        filterName: currentFilter.name,
+        filterEnabled: true
+      })
+    }
+  }
+
   async function getCameraCrop() {
     const { filters } = await obs.call("GetSourceFilterList", { sourceName: "Camera" })
     const fs = filters.find((f) => f.filterName === "top-left")?.filterSettings
@@ -338,6 +396,8 @@ export function createObsClient({ url, password }) {
     getCameraCrop,
     setCameraCrop,
     getCameraSpacing,
-    setCameraSpacing
+    setCameraSpacing,
+    getCameraScale,
+    setCameraScale
   }
 }
