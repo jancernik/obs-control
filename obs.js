@@ -74,6 +74,24 @@ export function createObsClient({ url, password }) {
     return values.map((val) => val.toFixed(1).replace(/[.,]0$/, "")).join("")
   }
 
+
+  function filterPosition(id) {
+    const parts = id.split(",").map(Number)
+    return { x: parts[4], y: parts[5] }
+  }
+
+  function findCurrentFilter(filters, currentId) {
+    const { x: cx, y: cy } = filterPosition(currentId)
+    return filters.reduce((best, filter) => {
+      const { x: fx, y: fy } = filterPosition(filter.id)
+      const d = Math.hypot(cx - fx, cy - fy)
+      const bestD = best
+        ? Math.hypot(cx - filterPosition(best.id).x, cy - filterPosition(best.id).y)
+        : Infinity
+      return d < bestD ? filter : best
+    }, null)
+  }
+
   async function getMoveFilters(sourceName) {
     await ensureConnected()
     const { filters } = await obs.call("GetSourceFilterList", { sourceName })
@@ -97,7 +115,7 @@ export function createObsClient({ url, password }) {
   async function setMoveFilter(filterName) {
     const moveFilters = await getMoveFilters("Camera")
     const currentId = await getCurrentFilterId("Camera", "Camera Source")
-    const currentFilter = moveFilters.find((filter) => filter.id === currentId)
+    const currentFilter = findCurrentFilter(moveFilters, currentId)
 
     if (moveFilters.some((filter) => filter.enabled)) return
 
@@ -118,7 +136,7 @@ export function createObsClient({ url, password }) {
   async function moveRelative(direction) {
     const moveFilters = await getMoveFilters("Camera")
     const currentId = await getCurrentFilterId("Camera", "Camera Source")
-    const currentFilter = moveFilters.find((filter) => filter.id === currentId)
+    const currentFilter = findCurrentFilter(moveFilters, currentId)
 
     if (!currentFilter || currentFilter.name === "fullscreen") return
     if (moveFilters.some((filter) => filter.enabled)) return
@@ -140,13 +158,88 @@ export function createObsClient({ url, password }) {
     })
   }
 
+  async function getCameraCrop() {
+    const { filters } = await obs.call("GetSourceFilterList", { sourceName: "Camera" })
+    const fs = filters.find((f) => f.filterName === "top-left")?.filterSettings
+
+    const crop = {
+      left: fs?.crop?.left ?? 0,
+      right: fs?.crop?.right ?? 0,
+      top: fs?.crop?.top ?? 0,
+      bottom: fs?.crop?.bottom ?? 0
+    }
+
+    const { sceneItems } = await obs.call("GetSceneItemList", { sceneName: "Camera" })
+    const cameraSource = sceneItems.find((item) => item.sourceName === "Camera Source")
+    const size = {
+      width: cameraSource.sceneItemTransform.sourceWidth,
+      height: cameraSource.sceneItemTransform.sourceHeight
+    }
+
+    return { size, crop }
+  }
+
+  async function setCameraCrop(crop = { left: 0, right: 0, top: 0, bottom: 0 }) {
+    const moveFilters = await getMoveFilters("Camera")
+    const currentId = await getCurrentFilterId("Camera", "Camera Source")
+    const currentFilter = findCurrentFilter(moveFilters, currentId)
+
+    const { filters } = await obs.call("GetSourceFilterList", { sourceName: "Camera" })
+    const corners = ["top-left", "top-right", "bottom-left", "bottom-right"]
+
+    for (const filterName of corners) {
+      const filterData = filters.find((f) => f.filterName === filterName)
+      if (!filterData) {
+        console.warn(`Filter not found: ${filterName}`)
+        continue
+      }
+
+      const fs = filterData.filterSettings
+
+      const leftDelta = crop.left - (fs.crop?.left ?? 0)
+      const rightDelta = crop.right - (fs.crop?.right ?? 0)
+      const topDelta = crop.top - (fs.crop?.top ?? 0)
+      const bottomDelta = crop.bottom - (fs.crop?.bottom ?? 0)
+
+      const xDeltaScaled = (leftDelta + rightDelta) * (fs.scale?.x ?? 1)
+      const yDeltaScaled = (topDelta + bottomDelta) * (fs.scale?.y ?? 1)
+
+      const newPos = { ...(fs.pos ?? { x: 0, y: 0 }) }
+      if (filterName === "top-right") {
+        newPos.x += xDeltaScaled
+      } else if (filterName === "bottom-left") {
+        newPos.y += yDeltaScaled
+      } else if (filterName === "bottom-right") {
+        newPos.x += xDeltaScaled
+        newPos.y += yDeltaScaled
+      }
+
+      await obs.call("SetSourceFilterSettings", {
+        sourceName: "Camera",
+        filterName,
+        filterSettings: {
+          ...fs,
+          pos: newPos,
+          crop: { top: crop.top, bottom: crop.bottom, left: crop.left, right: crop.right }
+        },
+        overlay: false
+      })
+    }
+
+    if (currentFilter) {
+      await obs.call("SetSourceFilterEnabled", {
+        sourceName: "Camera",
+        filterName: currentFilter.name,
+        filterEnabled: true
+      })
+    }
+  }
+
   return {
-    obs,
     connect,
-    ensureConnected,
-    getMoveFilters,
-    getCurrentFilterId,
     setMoveFilter,
-    moveRelative
+    moveRelative,
+    getCameraCrop,
+    setCameraCrop
   }
 }
